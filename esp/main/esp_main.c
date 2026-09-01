@@ -15,6 +15,10 @@
 #include "esp_vfs.h"
 #include "esp_vfs_fat.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
+#include "driver/ppa.h"
+#include "esp_cache.h"
 
 #include "../../ini.h"
 #include "../../pc.h"
@@ -96,36 +100,190 @@ typedef struct {
 	u8 *fb;
 } Console;
 
-#define NN 32
+#define NN 24
+
+static uint16_t *volatile disp_src = NULL;
+static TaskHandle_t disp_task_handle = NULL;
+static uint16_t *rot_buf = NULL;
+static uint16_t *snap_buf = NULL;
+static ppa_client_handle_t ppa_srm_handle = NULL;
+static volatile bool g_no_rotate = false;   /* Benchmark: Rotation aus */
+static void display_task(void *arg);
+
 Console *console_init(int width, int height)
 {
 	Console *c = malloc(sizeof(Console));
 	c->fb1 = fbmalloc(LCD_WIDTH * LCD_HEIGHT / NN * 2);
-	if (globals.panel_fb) {
-		/* Zero-copy: VGA renders directly into the RGB DMA frame buffer */
-		c->fb = globals.panel_fb;
-	} else {
-		c->fb = bigmalloc(LCD_WIDTH * LCD_HEIGHT * 2);
+	if (rot_buf == NULL) {
+		/* PSRAM-Heap ignoriert grosse Alignments -> manuell auf 64 aufrunden */
+		size_t sz = LCD_WIDTH * LCD_HEIGHT * 2;
+		uint8_t *raw = heap_caps_malloc(sz + 128, MALLOC_CAP_SPIRAM);
+		rot_buf = (uint16_t *)(((uintptr_t)raw + 127) & ~(uintptr_t)127);
 	}
+	if (snap_buf == NULL) {
+		size_t sz = LCD_WIDTH * LCD_HEIGHT * 2;
+		uint8_t *raw = heap_caps_malloc(sz + 128, MALLOC_CAP_SPIRAM);
+		snap_buf = (uint16_t *)(((uintptr_t)raw + 127) & ~(uintptr_t)127);
+	}
+	if (ppa_srm_handle == NULL) {
+		ppa_client_config_t ppa_cfg = {
+			.oper_type = PPA_OPERATION_SRM,
+			.max_pending_trans_num = 1,
+		};
+		esp_err_t err = ppa_register_client(&ppa_cfg, &ppa_srm_handle);
+		if (err != ESP_OK) {
+			ESP_LOGE("PPA", "register failed: %s", esp_err_to_name(err));
+			ppa_srm_handle = NULL;
+		} else {
+			ESP_LOGI("PPA", "SRM client registered");
+		}
+	}
+	if (disp_task_handle == NULL)
+		xTaskCreatePinnedToCore(display_task, "display", 4096, NULL, 0,
+					&disp_task_handle, 0);
+
+	/* VGA rendert in eigenen Buffer (PPA-Input); die PPA schreibt
+	 * zero-copy in den DPI-Framebuffer (Output). Kein In-Place! */
+	c->fb = bigmalloc(LCD_WIDTH * LCD_HEIGHT * 2);
 	return c;
 }
 
 void lcd_draw(int x_start, int y_start, int x_end, int y_end, void *src);
+#define STRETCH 1   /* Vollbild-Streckung */
+/* Eigener Display-Task (niedrige Prio, Core 0): macht die teure
+ * Stretch+Transpose-Arbeit, OHNE die vga_step/Retrace-Schleife zu blockieren. */
+/* Umschaltbar via Strg+M auf der USB-Tastatur (Hook in usb_input.c). */
+void display_toggle_rotate(void)
+{
+	g_no_rotate = !g_no_rotate;
+	ESP_LOGW("PERF", ">>> no_rotate=%d (Strg+M)", (int) g_no_rotate);
+}
+
+static void display_task(void *arg)
+{
+	for (;;) {
+		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+		uint16_t *src = disp_src;
+		uint16_t *out_buf = globals.panel_fb ? (uint16_t *)globals.panel_fb : rot_buf;
+		if (!src || !rot_buf || !snap_buf)
+			continue;
+
+		/* Kein Snapshot noetig: vga_task (schreibt fb) und display_task
+		 * (PPA) laufen beide auf Core 0 -> fb ist stabil waehrend PPA liest. */
+		int64_t t0 = esp_timer_get_time();
+		int64_t t1 = t0;   /* memcpy entfaellt */
+
+		if (ppa_srm_handle) {
+			/* PPA-Hardware: Rotation 90° CCW + Spiegelung in einem Durchlauf */
+			ppa_srm_oper_config_t oper;
+			memset(&oper, 0, sizeof(oper));
+			oper.in.buffer  = src;
+			oper.in.pic_w   = LCD_WIDTH;    /* 1280 */
+			oper.in.pic_h   = LCD_HEIGHT;   /* 720 */
+
+			/* Wie alter STRETCH-Pfad:
+			 * Nimm den zentralen 720x480-Ausschnitt aus dem 1280x720 VGA-Framebuffer
+			 * und strecke ihn auf Vollbild. */
+			oper.in.block_offset_x = 280;
+			oper.in.block_offset_y = 120;
+			oper.in.block_w = 720;
+			oper.in.block_h = 480;
+			oper.in.srm_cm  = PPA_SRM_COLOR_MODE_RGB565;
+
+			oper.out.buffer      = out_buf;
+			/* PPA erfordert: buffer_size muss aligned sein */
+			size_t raw_sz = LCD_WIDTH * LCD_HEIGHT * 2;
+			oper.out.buffer_size = (raw_sz + 127) & ~127;  /* auf 128 runden */
+			oper.out.pic_w       = LCD_HEIGHT;  /* 720 */
+			oper.out.pic_h       = LCD_WIDTH;   /* 1280 */
+			oper.out.srm_cm      = PPA_SRM_COLOR_MODE_RGB565;
+
+			/* Orientierung war mit 270° korrekt.
+			 * PPA skaliert vor der Rotation:
+			 * 720x480 -> 1280x720, danach Rotation -> 720x1280. */
+			if (g_no_rotate) {
+				/* BENCHMARK: keine Rotation, nur Skalierung */
+				oper.rotation_angle = PPA_SRM_ROTATION_ANGLE_0;
+				oper.scale_x = 1.0f;
+				oper.scale_y = 1280.0f / 480.0f;
+			} else {
+				oper.rotation_angle = PPA_SRM_ROTATION_ANGLE_270;
+				oper.scale_x = 1280.0f / 720.0f;
+				oper.scale_y = 720.0f / 480.0f;
+			}
+			oper.mirror_x = false;
+			oper.mirror_y = false;
+			oper.mode = PPA_TRANS_MODE_BLOCKING;
+
+			esp_err_t perr = ppa_do_scale_rotate_mirror(ppa_srm_handle, &oper);
+			if (perr != ESP_OK) {
+				static int ec = 0;
+				if (++ec <= 3)
+					ESP_LOGE("PPA", "srm failed: %s", esp_err_to_name(perr));
+				/* Fallback: Software */
+				for (int y = 0; y < LCD_HEIGHT; y++) {
+					const uint16_t *row = src + (size_t) y * LCD_WIDTH;
+					uint16_t *dst = rot_buf + y;
+					for (int x = 0; x < LCD_WIDTH; x++)
+						dst[(size_t) x * LCD_HEIGHT] = row[LCD_WIDTH - 1 - x];
+				}
+			}
+		} else {
+			/* Fallback: Software */
+			for (int y = 0; y < LCD_HEIGHT; y++) {
+				const uint16_t *row = src + (size_t) y * LCD_WIDTH;
+				uint16_t *dst = rot_buf + y;
+				for (int x = 0; x < LCD_WIDTH; x++)
+					dst[(size_t) x * LCD_HEIGHT] = row[LCD_WIDTH - 1 - x];
+			}
+		}
+
+		int64_t t2 = esp_timer_get_time();
+		/* Kanten-Artefakt der PPA-Rotation: die aeussersten rot_buf-Zeilen
+		 * (= linke/rechte Bildkante nach Rotation) schwarz setzen. */
+		memset(out_buf, 0, 2 * 720 * 2);                      /* row 0..1  -> rechte Kante */
+		memset(out_buf + (1280 - 2) * 720, 0, 2 * 720 * 2);
+		esp_cache_msync(out_buf, 4 * 720 * 2, ESP_CACHE_MSYNC_FLAG_TYPE_DATA);
+		esp_cache_msync(out_buf + (1280 - 4) * 720, 4 * 720 * 2, ESP_CACHE_MSYNC_FLAG_TYPE_DATA);   /* row last  -> linke Kante  */
+
+		/* Kanten-Artefakt der PPA-Rotation: die aeussersten rot_buf-Zeilen
+		 * (= linke/rechte Bildkante nach Rotation) schwarz setzen. */
+		memset(rot_buf, 0, 2 * 720 * 2);                      /* row 0..1  -> rechte Kante */
+		memset(rot_buf + (1280 - 2) * 720, 0, 2 * 720 * 2);   /* row last  -> linke Kante  */
+
+		if (!globals.panel_fb)
+			lcd_draw(0, 0, 720, 1280, rot_buf);
+		int64_t t3 = esp_timer_get_time();
+
+		static int fc = 0;
+		static int64_t acc_mem = 0, acc_tr = 0, acc_dr = 0;
+		static int64_t last_log = 0;
+		acc_mem += t1 - t0;
+		acc_tr  += t2 - t1;
+		acc_dr  += t3 - t2;
+		fc++;
+		if (t3 - last_log > 1000000) {   /* 1x pro Sekunde */
+			ESP_LOGW("PERF", "disp fps=%d avg us: memcpy=%ld transpose=%ld draw=%ld",
+				 fc, (long)(acc_mem / fc), (long)(acc_tr / fc), (long)(acc_dr / fc));
+			fc = 0; acc_mem = acc_tr = acc_dr = 0; last_log = t3;
+		}
+	}
+}
+
+static int redraw_count = 0;
+static int redraw_last_log = 0;
 static void redraw(void *opaque,
 		   int x, int y, int w, int h)
 {
 	Console *s = opaque;
-	for (int i = 0; i < NN; i++) {
-		uint16_t *src = (uint16_t *) s->fb;
-		src += LCD_WIDTH * LCD_HEIGHT / NN * i;
-		memcpy(s->fb1, src, LCD_WIDTH * LCD_HEIGHT / NN * 2);
-		lcd_draw(0, LCD_WIDTH / NN * i,
-			 LCD_HEIGHT, LCD_WIDTH / NN * (i + 1),
-			 s->fb1);
-		vga_step(s->pc->vga);
-		usleep(900);
-	}
+	/* Nur signalisieren - die schwere Arbeit macht display_task,
+	 * damit vga_step/Retrace nicht blockiert wird. */
+	disp_src = (uint16_t *) s->fb;
+	redraw_count++;
+	if (disp_task_handle)
+		xTaskNotifyGive(disp_task_handle);
 }
+
 
 static int pc_main(const char *file)
 {
@@ -273,11 +431,21 @@ void app_main(void)
 #ifndef PSRAM_ALLOC_LEN
 	// use the whole psram
 	size_t len;
-	psram = esp_psram_get(&len);
-	psram_len = len;
-#else
-	psram_len = PSRAM_ALLOC_LEN;
+	psram_len = 20 * 1024 * 1024;
 	psram = heap_caps_calloc(1, psram_len, MALLOC_CAP_SPIRAM);
+	if (!psram) {  /* Fallback: kleiner */
+		psram_len = 12 * 1024 * 1024;
+		psram = heap_caps_calloc(1, psram_len, MALLOC_CAP_SPIRAM);
+	}
+	ESP_LOGW("MEM", "emulator PSRAM pool = %ld MB", psram_len / (1024*1024));
+#else
+	psram_len = 20 * 1024 * 1024;
+	psram = heap_caps_calloc(1, psram_len, MALLOC_CAP_SPIRAM);
+	if (!psram) {  /* Fallback: kleiner */
+		psram_len = 12 * 1024 * 1024;
+		psram = heap_caps_calloc(1, psram_len, MALLOC_CAP_SPIRAM);
+	}
+	ESP_LOGW("MEM", "emulator PSRAM pool = %ld MB", psram_len / (1024*1024));
 #endif
 
 	const static char *files[] = {

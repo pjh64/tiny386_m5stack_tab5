@@ -9,50 +9,41 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 0.5.3
-  espressif/esp_lcd_axs15231b:
-    component_hash: ae92c4bec4f69442757b42638aebc05c1acc42fe8b54a6fd4b1ecebdd67657e6
+  espressif/esp_lcd_st7123:
+    component_hash: 067236d959e1b4e51467708242083926d3fe898e071a5a92086c5a94f1c5dac7
     dependencies:
-    - name: idf
-      require: private
-      version: '>5.0.4,!=5.1.1'
     - name: espressif/cmake_utilities
       registry_url: https://components.espressif.com
       require: private
       version: 0.*
-    - name: espressif/esp_lcd_touch
-      registry_url: https://components.espressif.com
-      require: public
-      version: ^1
+    - name: idf
+      require: private
+      version: '>=5.4'
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.0.0
-  espressif/esp_lcd_touch:
-    component_hash: 3f85a7d95af876f1a6ecca8eb90a81614890d0f03a038390804e5a77e2caf862
+    targets:
+    - esp32p4
+    version: 1.0.2
+  espressif/usb:
+    component_hash: 6c2cff118141dbbca181d0d27d71801fdddfc78f7ac03ae43f6e5a8cbd89cb99
     dependencies:
     - name: idf
       require: private
-      version: '>=4.4.2'
+      version: '>=5.5.3'
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.2.1
-  espressif/esp_lcd_touch_gt911:
-    component_hash: 6029febef66eefd0910d527d7f30292779ccbf22a8dedd2bd69466acf0068a7b
-    dependencies:
-    - name: espressif/esp_lcd_touch
-      registry_url: https://components.espressif.com
-      require: public
-      version: ^1.2.0
-    - name: idf
-      require: private
-      version: '>=5.2'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 1.2.0~2
+    targets:
+    - esp32s2
+    - esp32s3
+    - esp32s31
+    - esp32p4
+    - esp32h4
+    - linux
+    version: 1.5.0
   espressif/usb_host_hid:
-    component_hash: a6c5366f9b6d80b0d5f56d085d62941464512e0968b96c5877e76a80fcc23f13
+    component_hash: 74b9c84cd2921a5e987f504c1713ca7819f7e8be80565e5253e9e9c7e07ab881
     dependencies:
     - name: idf
       require: private
@@ -74,16 +65,15 @@ dependencies:
     - esp32h4
     - esp32s31
     - linux
-    version: 1.2.0
+    version: 1.2.1
   idf:
     source:
       type: idf
-    version: 5.2.7
+    version: 6.0.2
 direct_dependencies:
-- espressif/esp_lcd_axs15231b
-- espressif/esp_lcd_touch_gt911
+- espressif/esp_lcd_st7123
 - espressif/usb_host_hid
 - idf
-manifest_hash: 2f2b5dc04a7ca3f89b2ddf85b36be8ae87eb6d09dab492ff01b49275c2bcde6f
-target: esp32s3
-version: 2.0.0
+manifest_hash: 5c18b008922bcd2ddfac030ce64c7afd573769d15265f6498273eb61fa97b1a3
+target: esp32p4
+version: 3.0.0

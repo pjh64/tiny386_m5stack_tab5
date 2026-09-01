@@ -26,6 +26,7 @@
 #include "usb/hid_usage_mouse.h"
 
 int hid_usage_to_ps2input(int hid);
+extern void display_toggle_rotate(void);  /* Umschalten Rotate/Benchmark-Modus */
 const char *hid_usage_to_name(uint8_t code);
 int hid_usage_to_linux_keycode(int hid);
 
@@ -128,6 +129,8 @@ static inline bool key_found(const uint8_t *const src,
  */
 static void hid_host_keyboard_report_callback(const uint8_t *const data, const int length)
 {
+    if (globals.kbd == NULL)
+        return;   /* PC noch nicht bereit */
     hid_keyboard_input_report_boot_t *kb_report = (hid_keyboard_input_report_boot_t *)data;
 
     if (length < sizeof(hid_keyboard_input_report_boot_t))
@@ -224,31 +227,24 @@ static void hid_host_mouse_report_callback(const uint8_t *const data, const int 
 {
     if (length < 3)
         return;
+    if (globals.mouse == NULL)
+        return;   /* PC noch nicht bereit */
 
-    uint8_t buttons_raw = data[0];
-    int8_t dx = (int8_t)data[1];
-    int8_t dy = (int8_t)data[2];
-
-    // kill corrupt packets
-    if (dx > 50 || dx < -50 || dy > 50 || dy < -50)
+    /* Report-Layout:
+     *  Report-Protokoll mit ID (len>=5): [ID][buttons][X][Y][wheel]
+     *  Boot-Protokoll (len 3-4):         [buttons][X][Y][(wheel)] */
+    int off = (length >= 5) ? 1 : 0;
+    if (length < off + 3)
         return;
 
-    int buttons = 0;
-    if (buttons_raw & 0x01)
-        buttons |= 1;
-    if (buttons_raw & 0x02)
-        buttons |= 2;
-    if (buttons_raw & 0x04)
-        buttons |= 4;
+    uint8_t buttons_raw = data[off + 0];
+    int8_t dx = (int8_t)data[off + 1];
+    int8_t dy = (int8_t)data[off + 2];
+    int8_t wheel = (length >= off + 4) ? (int8_t)data[off + 3] : 0;
 
-    // DEBUG PRINT if movement noticeable
-    if (dx > 5 || dx < -5 || dy > 5 || dy < -5)
-    {
-        printf("HID MOUSE: raw=%02X dx=%d dy=%d buttons=%02X\n",
-               buttons_raw, dx, dy, buttons_raw);
-        fflush(stdout);
-    }
-    ps2_mouse_event(globals.mouse, dx, dy, 0, buttons);
+    int buttons = buttons_raw & 0x07;   /* L=1, R=2, M=4 (PS2-kompatibel) */
+
+    ps2_mouse_event(globals.mouse, dx, dy, wheel, buttons);
 }
 
 /**

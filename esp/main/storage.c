@@ -1,9 +1,9 @@
+#include "esp_log.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/sdmmc_host.h"
 #ifdef SD_SPI_MOSI
-#include "driver/i2c.h"
 #endif
 #include "driver/spi_common.h"
 #include "driver/sdspi_host.h"
@@ -14,6 +14,8 @@
 #include "common.h"
 #ifdef SD_PWR_CTRL_LDO_IO_ID
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
+
+
 #endif
 
 static const char *TAG = "storage";
@@ -38,13 +40,13 @@ void storage_init(void)
 #ifdef SD_CLK
 #ifndef USE_RAWSD
 	// Options for mounting the filesystem.
-	esp_vfs_fat_sdmmc_mount_config_t sdmount_config = {
+        esp_vfs_fat_sdmmc_mount_config_t sdmount_config = {
 		.format_if_mount_failed = false,
 		.max_files = 5,
 		.allocation_unit_size = 16 * 1024
 	};
 	sdmmc_card_t *card;
-	esp_err_t ret;
+	esp_err_t ret = ESP_OK;
 	ESP_LOGI(TAG, "Initializing SD card");
 
 	// Use settings defined above to initialize SD card and mount FAT filesystem.
@@ -99,10 +101,10 @@ void storage_init(void)
 	slot_config.cmd = SD_CMD;
 	slot_config.d0 = SD_D0;
 #endif
-	slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+	/* slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP; */ /* off per Tab5 BSP */
 
 	ESP_LOGI(TAG, "Mounting filesystem");
-	ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &sdmount_config, &card);
+	esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &sdmount_config, &card);
 
 	if (ret != ESP_OK) {
 		if (ret == ESP_FAIL) {
@@ -117,7 +119,7 @@ void storage_init(void)
 		sd_mount_ok = true;
 	}
 #else
-	esp_err_t ret;
+	esp_err_t ret = ESP_OK;
 	sdmmc_card_t *card = malloc(sizeof(sdmmc_card_t));
 	memset(card, 0, sizeof(sdmmc_card_t));
 	ESP_LOGI(TAG, "Initializing SD card");
@@ -158,7 +160,7 @@ void storage_init(void)
 	slot_config.cmd = SD_CMD;
 	slot_config.d0 = SD_D0;
 #endif
-	slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+	/* slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP; */ /* off per Tab5 BSP */
 
 	ret = host.init();
 	assert(ret == 0);
@@ -170,45 +172,7 @@ void storage_init(void)
 #endif
 	rawsd = card;
 #elif defined(SD_SPI_MOSI)
-	/*
-	 * elecrow7s3: SPI-mode SD card via SPI2_HOST.
-	 *
-	 * Before touching the SPI bus, we must enable the TF card power/mux
-	 * path through the CH422G I/O expander over I2C.  After sending the
-	 * enable command we delete the I2C driver so that lcd_elecrow7s3.c can
-	 * re-initialise it cleanly for backlight control.
-	 */
-
-	/* ---- I2C pre-init: enable TF card power ---- */
-	ESP_LOGI(TAG, "Enabling TF card power via I2C");
-	{
-		i2c_config_t i2c_cfg = {
-			.mode             = I2C_MODE_MASTER,
-			.sda_io_num       = LCD_I2C_SDA,
-			.scl_io_num       = LCD_I2C_SCL,
-			.sda_pullup_en    = GPIO_PULLUP_ENABLE,
-			.scl_pullup_en    = GPIO_PULLUP_ENABLE,
-			.master.clk_speed = 400000,
-		};
-		esp_err_t r = i2c_param_config(I2C_NUM_0, &i2c_cfg);
-		if (r == ESP_OK)
-			r = i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0);
-		if (r == ESP_OK) {
-			uint8_t cmd = 0x10;
-			i2c_master_write_to_device(I2C_NUM_0, 0x30, &cmd, 1,
-			                           pdMS_TO_TICKS(100));
-			ESP_LOGI(TAG, "TF card power enabled");
-		} else {
-			ESP_LOGW(TAG, "I2C init failed (%s), skipping TF power-on",
-			         esp_err_to_name(r));
-		}
-		/* 500 ms for power path to settle before first CMD0/CMD8 */
-		vTaskDelay(pdMS_TO_TICKS(500));
-		/* Release I2C so vga_task can reinit it for backlight */
-		i2c_driver_delete(I2C_NUM_0);
-	}
-
-	/* ---- SPI bus init ---- */
+		/* ---- SPI bus init ---- */
 	ESP_LOGI(TAG, "Initializing SPI2 bus for SD card");
 	{
 		spi_bus_config_t bus_cfg = {
@@ -224,7 +188,7 @@ void storage_init(void)
 
 	/* ---- Mount SD card via FAT/sdspi ---- */
 	{
-		esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
+        esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
 			.format_if_mount_failed = false,
 			.max_files              = 3,
 			.allocation_unit_size   = 16 * 1024,
