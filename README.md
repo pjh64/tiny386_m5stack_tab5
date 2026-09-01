@@ -107,7 +107,7 @@ scripts/build.sh patch_idf  # apply patches to ESP-IDF 5.2.x
 #scripts/build.sh patch_idf_60  # apply patches to ESP-IDF 6.0.x
 make prepare
 cd esp
-idf.py -DBOARD=jc3248w535 update-dependencies build  # or -DBOARD=elecrow7s3
+idf.py -DBOARD=jc3248w535 update-dependencies build  # or -DBOARD=elecrow7s3 or -DBOARD=m5stack_tab5
 idf.py flash
 ```
 
