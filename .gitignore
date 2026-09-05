@@ -1,0 +1,6 @@
+**/build/
+**/sdkconfig
+**/.dependencies/
+.managed_components/
+.DS_Store
+Thumbs.db
