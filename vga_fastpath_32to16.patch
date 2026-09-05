@@ -1,0 +1,38 @@
+--- a/vga.c
++++ b/vga.c
+@@ -1105,6 +1105,33 @@ static void vga_graphic_refresh(VGAState *s,
+     uint32_t plane_mask = s->ar[0x12];
++
++#if BPP == 16
++    /* Fast-Path für 32bpp VBE-Modi: konvertiere zu 16bpp RGB565 */
++    if (shift_control == 2 && bpp == 32 && xdiv == 1 && 
++        (s->cr[0x17] & 1) && (s->cr[0x17] & 2)) {
++        int64_t t_start = esp_timer_get_time();
++        
++        for (int y = 0; y < h; y++) {
++            uint32_t *src = (uint32_t*)(vram + addr1 + y * line_offset);
++            uint16_t *dst = (uint16_t*)(fb_dev->fb_data + i0 + y * fb_dev->stride);
++            for (int x = 0; x < w; x++) {
++                uint32_t c = src[x];
++                dst[x] = ((c >> 3) & 0x1f) | ((c >> 10) & 0x3f) << 5 | ((c >> 19) & 0x1f) << 11;
++            }
++        }
++        
++        static int64_t t_fastpath_total = 0;
++        static int fastpath_count = 0;
++        t_fastpath_total += (esp_timer_get_time() - t_start);
++        fastpath_count++;
++        if (fastpath_count >= 100) {
++            fprintf(stderr, "FASTPATH avg=%lldus\n", (long long)(t_fastpath_total / 100));
++            t_fastpath_total = 0;
++            fastpath_count = 0;
++        }
++        
++        redraw_func(opaque, 0, 0, fb_dev->width, fb_dev->height);
++        return;
++    }
++#endif
++
+     for (int y = 0; y < h; y++) {
+         uint32_t addr = addr1;
+         if (!(s->cr[0x17] & 1)) {

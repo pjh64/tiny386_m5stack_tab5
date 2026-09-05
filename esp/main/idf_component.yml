@@ -1,0 +1,5 @@
+dependencies:
+  espressif/esp_lcd_st7123: ^1.0.2
+  espressif/usb_host_hid: ^1.2.1
+  idf:
+    version: '>=5.0.0'

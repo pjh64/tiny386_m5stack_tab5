@@ -1,0 +1,16 @@
+--- a/vga.c
++++ b/vga.c
+@@ -1105,6 +1105,12 @@ static void vga_graphic_refresh(VGAState *s,
+     uint32_t plane_mask = s->ar[0x12];
++
++#if BPP == 32
++    /* Debug: Zeige die Bedingungen für den Fast-Path */
++    static int debug_count = 0;
++    if (debug_count++ < 5) {
++        fprintf(stderr, "Fast-Path check: shift_control=%d bpp=%d xdiv=%d cr17=0x%02x\n",
++                shift_control, bpp, xdiv, s->cr[0x17]);
++    }
++
+     /* Fast-Path für 32bpp VBE-Modi: direkte memcpy ohne Konvertierung */
+     if (shift_control == 2 && bpp == 32 && xdiv == 1 && 
+         (s->cr[0x17] & 1) && (s->cr[0x17] & 2)) {

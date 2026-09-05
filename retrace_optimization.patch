@@ -1,0 +1,37 @@
+--- vga.c.orig
++++ vga.c
+@@ -1481,8 +1481,35 @@
+         case 0x3ba:
+         case 0x3da:
+-            /* just toggle to fool polling */
+-//            s->st01 ^= ST01_V_RETRACE | ST01_DISP_ENABLE;
++            /* Fast-forward time if guest is busy-waiting for VRETRACE */
++            if (!(s->st01 & ST01_V_RETRACE)) {
++                /* Guest is polling, skip forward to next VRETRACE */
++                uint32_t now = get_uticks();
++                
++                /* Calculate how many ticks until VRETRACE */
++                uint32_t ticks_to_retrace = 0;
++                if (after_eq(s->retrace_time, now)) {
++                    /* Next retrace is in the future */
++                    if (s->retrace_phase == 0) {
++                        /* Need to wait for phase 1 (VRETRACE) */
++                        ticks_to_retrace = 833; /* 833us to phase 1 */
++                    } else if (s->retrace_phase == 1) {
++                        /* Already at VRETRACE phase, but st01 not set yet */
++                        ticks_to_retrace = 0;
++                    } else {
++                        /* Phase 2, need full cycle */
++                        ticks_to_retrace = 833 + 833; /* 1666us */
++                    }
++                }
++                
++                /* Advance time to trigger VRETRACE */
++                s->st01 |= ST01_V_RETRACE;
++                s->retrace_phase = 1;
++                s->retrace_time = now + 833;
++            }
++
+             val = s->st01;
+             s->ar_flip_flop = 0;
+             break;
